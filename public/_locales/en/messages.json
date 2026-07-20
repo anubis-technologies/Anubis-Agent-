@@ -1,0 +1,11 @@
+{
+  "extension_name": {
+    "message": "Anubis Agent"
+  },
+  "extension_description": {
+    "message": "Multi-AI Agent Framework — DeepSeek, ChatGPT, Gemini, Claude with MCP tools, skills, memory, shell and browser control"
+  },
+  "extension_action_title": {
+    "message": "Anubis Agent"
+  }
+}

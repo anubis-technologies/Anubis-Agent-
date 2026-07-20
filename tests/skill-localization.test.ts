@@ -1,0 +1,186 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BUILTIN_SKILLS, getLocalizedBuiltinSkills } from '../core/skill/builtin';
+import { getAllSkills, setSkillEnabled, setSkillsEnabled } from '../core/skill/registry';
+import type { Skill } from '../core/types';
+
+const SKILL_STORAGE_KEY = 'deepseek_pp_skills';
+const BUNDLED_ENABLED_STORAGE_KEY = 'deepseek_pp_bundled_skill_enabled';
+
+let storage: Record<string, unknown>;
+
+function findSkill(skills: Skill[], name: string): Skill {
+  const skill = skills.find((item) => item.name === name);
+  if (!skill) throw new Error(`Missing skill: ${name}`);
+  return skill;
+}
+
+beforeEach(() => {
+  storage = {};
+  vi.stubGlobal('chrome', {
+    storage: {
+      local: {
+        get: vi.fn(async (key: string) => ({ [key]: storage[key] })),
+        set: vi.fn(async (values: Record<string, unknown>) => {
+          storage = { ...storage, ...values };
+        }),
+        remove: vi.fn(async (key: string) => {
+          delete storage[key];
+        }),
+      },
+      onChanged: {
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      },
+    },
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('builtin skill localization', () => {
+  it('selects English builtin display and model instructions without changing names', () => {
+    const skills = getLocalizedBuiltinSkills('en');
+    const shell = findSkill(skills, 'shell');
+    const memory = findSkill(skills, 'memory');
+
+    expect(shell.source).toBe('builtin');
+    expect(shell.name).toBe('shell');
+    expect(shell.description).toContain('Local command-line assistant');
+    expect(shell.instructions).toContain('You are executing local shell commands');
+    expect(shell.instructions).toContain('<shell_exec>{"command":"..."}</shell_exec>');
+    expect(shell.instructions).not.toContain('你正在通过');
+
+    expect(memory.name).toBe('memory');
+    expect(memory.description).toContain('Memory management');
+    expect(memory.instructions).toContain('The user is asking to manage memories');
+    expect(memory.instructions).toContain('"name":"memory_update"');
+    expect(memory.instructions).toContain('"description":"Update an existing memory"');
+  });
+
+  it('keeps Chinese builtin skills as the default resource', () => {
+    const skills = getLocalizedBuiltinSkills('zh-CN');
+    const shell = findSkill(skills, 'shell');
+    const memory = findSkill(skills, 'memory');
+
+    expect(shell.description).toContain('本地命令行助手');
+    expect(shell.instructions).toContain('你正在通过 DeepSeek++ Shell MCP 执行本地命令');
+    expect(memory.instructions).toContain('"description":"更新已有记忆"');
+  });
+
+  it('does not mutate the canonical default builtin skill objects', () => {
+    const canonicalShell = findSkill(BUILTIN_SKILLS, 'shell');
+    const englishShell = findSkill(getLocalizedBuiltinSkills('en'), 'shell');
+
+    expect(canonicalShell.description).toContain('本地命令行助手');
+    expect(englishShell.description).toContain('Local command-line assistant');
+  });
+
+  it('leaves OfficeCLI third-party skills out of builtin translation scope and disabled by default', () => {
+    const english = findSkill(getLocalizedBuiltinSkills('en'), 'officecli-styles');
+    const chinese = findSkill(getLocalizedBuiltinSkills('zh-CN'), 'officecli-styles');
+
+    expect(english.source).toBe('third-party');
+    expect(english.enabled).toBe(false);
+    expect(english.description).toBe(chinese.description);
+    expect(english.instructions).toBe(chinese.instructions);
+  });
+
+  it('keeps bundled third-party skills out of the active list until explicitly enabled', async () => {
+    expect((await getAllSkills()).some((skill) => skill.name === 'officecli')).toBe(false);
+
+    const libraryOfficeCli = findSkill(await getAllSkills({ includeDisabled: true }), 'officecli');
+    expect(libraryOfficeCli.source).toBe('third-party');
+    expect(libraryOfficeCli.enabled).toBe(false);
+
+    await setSkillEnabled('officecli', true);
+
+    const activeOfficeCli = findSkill(await getAllSkills(), 'officecli');
+    expect(activeOfficeCli.source).toBe('third-party');
+    expect(activeOfficeCli.enabled).toBe(true);
+  });
+
+  it('does not treat first-party builtin skills as locally toggleable', async () => {
+    await expect(setSkillEnabled('shell', false)).rejects.toThrow('Skill cannot be enabled or disabled');
+  });
+
+  it('toggles multiple custom and remote skills with one storage write', async () => {
+    storage[SKILL_STORAGE_KEY] = [
+      {
+        name: 'custom-note',
+        description: 'Custom',
+        instructions: 'Custom instructions',
+        source: 'custom',
+        memoryEnabled: false,
+        enabled: false,
+      },
+      {
+        name: 'remote-skill',
+        description: 'Remote',
+        instructions: 'Remote instructions',
+        source: 'remote',
+        memoryEnabled: false,
+        enabled: false,
+      },
+    ];
+
+    await setSkillsEnabled([
+      { name: 'custom-note', enabled: true },
+      { name: 'remote-skill', enabled: true },
+    ]);
+
+    const saved = storage[SKILL_STORAGE_KEY] as Skill[];
+    expect(saved.map((skill) => [skill.name, skill.enabled])).toEqual([
+      ['custom-note', true],
+      ['remote-skill', true],
+    ]);
+    expect(chrome.storage.local.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles multiple bundled third-party skills in one override write', async () => {
+    await setSkillsEnabled([
+      { name: 'officecli', enabled: true },
+      { name: 'officecli-styles', enabled: true },
+    ]);
+
+    expect(storage[BUNDLED_ENABLED_STORAGE_KEY]).toMatchObject({
+      officecli: true,
+      'officecli-styles': true,
+    });
+    expect(chrome.storage.local.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps custom and remote skills exactly as authored while localizing builtins', async () => {
+    storage[SKILL_STORAGE_KEY] = [
+      {
+        name: 'custom-note',
+        description: '自定义描述',
+        instructions: '保持我的原始指令',
+        source: 'custom',
+        memoryEnabled: false,
+        enabled: true,
+      },
+      {
+        name: 'remote-skill',
+        description: 'Remote original description',
+        instructions: 'Remote original instructions',
+        source: 'remote',
+        memoryEnabled: false,
+        enabled: false,
+      },
+    ];
+
+    const skills = await getAllSkills({ includeDisabled: true, locale: 'en' });
+    const shell = findSkill(skills, 'shell');
+    const custom = findSkill(skills, 'custom-note');
+    const remote = findSkill(skills, 'remote-skill');
+
+    expect(shell.description).toContain('Local command-line assistant');
+    expect(custom.description).toBe('自定义描述');
+    expect(custom.instructions).toBe('保持我的原始指令');
+    expect(remote.description).toBe('Remote original description');
+    expect(remote.instructions).toBe('Remote original instructions');
+    expect(remote.enabled).toBe(false);
+  });
+});

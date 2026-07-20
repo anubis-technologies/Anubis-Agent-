@@ -1,0 +1,11 @@
+{
+  "extension_name": {
+    "message": "Anubis Agent"
+  },
+  "extension_description": {
+    "message": "多AI代理框架 — DeepSeek、ChatGPT、Gemini、Claude，支持MCP工具、技能、记忆、Shell和浏览器控制"
+  },
+  "extension_action_title": {
+    "message": "Anubis Agent"
+  }
+}
